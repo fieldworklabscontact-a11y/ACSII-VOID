@@ -1,0 +1,10 @@
+build/
+cmake-build-*/
+.cache/
+*.o
+*.a
+*.so
+*.wasm
+*.js
+*.html
+.DS_Store
