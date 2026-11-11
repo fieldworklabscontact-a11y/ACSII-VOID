@@ -63,6 +63,7 @@ func (g *Game) Update() error {
 func (g *Game) Draw(screen *ebiten.Image) {
 	screen.Fill(color.RGBA{20,24,40,225})
 	op := &ebiten.DrawImageOptions{}
+	op.Filter = ebiten.FilterLinear
 	op.GeoM.Translate(-float64(spriteSize)/2,-float64(spriteSize)/2)
 	op.GeoM.Rotate(g.engine.Heading)
 	op.GeoM.Translate(float64(spriteSize)/2,float64(spriteSize)/2)
