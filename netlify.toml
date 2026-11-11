@@ -1,0 +1,3 @@
+[build]
+  command = "./build-web.sh"
+  publish = "dist"
