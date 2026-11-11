@@ -10,7 +10,7 @@ import (
 )
 
 const (
-	screenWidth = 640
+	screenWidth = 560
 	screenHeight = 480
 	spriteSize = 16
 )
