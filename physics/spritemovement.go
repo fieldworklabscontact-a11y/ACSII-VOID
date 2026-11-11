@@ -12,7 +12,7 @@ type AxisController struct {
 }
 
 func (c *AxisController) Update(dt, vf, p1, p2 float64) {
-	const weight = 1.3
+	const weight = 0.9
 	c.Time += dt / weight
 	if c.Active {
 		if c.Time >=1.0 {
