@@ -21,11 +21,16 @@ type Game struct{
 	lastFrame time.Time
 }
 func NewGame() *Game {
-	img := ebiten.NewImage(spriteSize, spriteSize)
-	img.Fill(color.White)
+	paddedSize := spriteSize + 2
+	img := ebiten.NewImage(paddedSize, paddedSize)
+	innerSquare := ebiten.NewImage(spriteSize, spriteSize)
+	innerSquare.Fill(color.White)
+	op := &ebiten.DrawImageOptions{}
+	op.GeoM.Translate(1,1)
+	img.DrawImage(innerSquare, op)
 	engine := physics.NewShipEngine(120.0)
-	engine.X = float64(screenWidth)/2 - float64(spriteSize)/2
-	engine.Y = float64(screenHeight)/2 - float64(spriteSize)/2
+	engine.X = float64(screenWidth)/2 - float64(paddedSize)/2
+	engine.Y = float64(screenHeight)/2 - float64(paddedSize)/2
 	return &Game{
 		sprite: img,
 		engine: engine,
