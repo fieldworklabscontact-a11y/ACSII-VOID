@@ -28,7 +28,7 @@ func NewGame() *Game {
 	op := &ebiten.DrawImageOptions{}
 	op.GeoM.Translate(1,1)
 	img.DrawImage(innerSquare, op)
-	engine := physics.NewShipEngine(200.0)
+	engine := physics.NewShipEngine(230.0)
 	engine.X = float64(screenWidth)/2 - float64(paddedSize)/2
 	engine.Y = float64(screenHeight)/2 - float64(paddedSize)/2
 	return &Game{
