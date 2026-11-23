@@ -45,7 +45,9 @@ func (g *Game) Update() error {
 	dt := now.Sub(g.lastFrame).Seconds()
 	g.lastFrame = now
 	g.boss.Update(1.0/60, g.engine.X, g.engine.Y)
-
+	if g.boss.Hit(g.engine.X, g.engine.Y, 8) {
+	log.Println("bitten!")
+}
 	if ebiten.IsKeyPressed(ebiten.KeyArrowLeft) || ebiten.IsKeyPressed(ebiten.KeyA){
 		g.engine.Left.HandlePress()
 	}else{

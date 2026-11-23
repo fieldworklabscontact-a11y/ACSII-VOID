@@ -100,3 +100,4 @@ func (t1 *Timeline) Update(dt float64) bool {
 	}
 	return true
 }
+

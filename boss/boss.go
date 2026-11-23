@@ -1,189 +1,217 @@
 package boss
 
 import (
-	"image/color"
+	"embed"
+	"image/png"
 	"math"
 
 	"github.com/hajimehoshi/ebiten/v2"
 )
+var assets embed.FS
 const (
+	pxPerMM = 1.2
+	scale = 0.6
+	flip = -1.0
+	hingeX, hingeY = 94.0, 202.0
+	irisAngle = 0.1
 	bodyW, bodyH = 64.0, 56.0
 	shoulderOffset = 38.0
 	armLen = 70.0
 	maxSlide = 150.0
 )
+type spot struct{ x, y float64}
 var (
-	cream = color.RGBA{236, 226, 196, 255}
-	ink = color.RGBA{18, 14, 12, 255}
-	red = color.RGBA{200, 50, 40, 255}
+	topJawAt = spot{85.372576, 52.757993}
+	botJawAt = spot{86.789479, 203.20573}
+	endAt = spot{79.033332, 133.82167}
+	midAt = spot{89.826928, 173.82843}
+	mid1At = spot{6.448102, 174.35862}
+	mid2At = spot{20.814335, 176.88405}
 )
-
+var eyeCentre = [4]spot{{76.3, 163.3}, {189.1, 125.4}, {76.3, 271.0}, {140.2, 236.1}}
+var eyeJaw = [4]int{0, 0, 1, 1}
+type Circle struct{ X, Y, R float64 }
 type Boss struct {
-	homeX, homeY, groundY float64
-	time, bob float64
-	armRot [2]Eased
-	armExt [2]Eased
-	squash Eased
-	bodyDX Eased
-	headTilt Spring
-	tail *Chain
-	t1 Timeline
+	x, y float64
+	time float64
+	bite Eased
+	dy Eased
+	kick Spring
+	tl Timeline
 	cooldown float64
-	slamCount int
 	tremble float64
-	trembleArm int
-	prevDX float64
 	px, py float64
+	look [4]float64
 	Shake float64
 	HitActive bool
-	white *ebiten.Image
+	topJaw, botJaw, end, mid, mid1, mid2 *ebiten.Image
+	eyes [4]*ebiten.Image
 	n int
 }
-func New(x, y, groundY float64) *Boss {
-	b := &Boss{homeX: x, homeY: y, groundY: groundY, cooldown: 1.5}
-	for i := range b. armExt {
-		b.armExt[i].Set(1)
+
+func load(name string) *ebiten.Image {
+	f, err := assets.Open("assets/" + name + ".png")
+	if err != nil {
+		panic(err)
 	}
-	b.armRot[0].Set(-0.25)
-	b.armRot[1].Set(0.25)
-	b.squash.Set(1)
-	b.headTilt = Spring{K: 220, Damp: 0.9}
-	b.tail = NewChain(8,13, x, y+22)
-	b.white = ebiten.NewImage(1, 1)
-	b.white.Fill(color.White)
+	defer f.Close()
+	img, err := png.Decode(f)
+	if err != nil {
+		panic(err)
+	}
+	return ebiten.NewImageFromImage(img)
+}
+func New(x, y, _ float64) *Boss {
+	b := &Boss{x: x, y: y, cooldown: 1.5}
+	b.kick = Spring{K: 90, Damp: 0.9}
+	b.topJaw, b.botJaw = load("top_skeleton_jaw"), load("bottom_skeleton_jaw")
+	b.end, b.mid = load("endbranch"), load("midbranch")
+	b.mid1, b.mid2 = load("midbranch_1"), load("midbranch_2")
+	b.eyes = [4]*ebiten.Image{load("eye1"), load("eye2"), load("eye3"), load("eye4")}
 	return b
 }
 func clamp(v, lo, hi float64) float64 { return math.Max(lo, math.Min(hi, v))}
+func wrap(a float64) float64 { return math.Atan2(math.Sin(a), math.Cos(a))}
+func (b *Boss) jawAngles() (top, bot float64) {
+	v := b.bite.Value + b.tremble + 0.04*math.Sin(b.time*1.6)
+	return 0.52 * v, 0.50 * v
+}
+func (b *Boss) eyeAt(i int) (rx, ry, rot float64) {
+	top, bot := b.jawAngles()
+	rot = top
+	if eyeJaw[i] == 1 {
+		rot = bot
+	}
+	cx := eyeCentre[i].x - hingeX
+	cy := eyeCentre[i].y - hingeY + 3*math.Sin(b.time*1.7+float64(i)*1.9)
+	c, s := math.Cos(rot), math.Sin(rot)
+	return cx*c - cy*s, cx*s + cy*c, rot
+}
+func (b *Boss) screenOf(rx, ry float64) (float64, float64) {
+	return b.x + flip*scale*rx, b.y + b.dy.Value +  scale*ry
+}
 func (b *Boss) Update(dt, px, py float64) {
 	b.time += dt
 	b.px, b.py = px, py
-	b.bob = math.Sin(b.time*2.2) * 4
-	for i := range b.armRot {
-		b.armRot[i].Update(dt)
-		b.armExt[i].Update(dt)
+	b.bite.Update(dt)
+	b.dy.Update(dt)
+	b.kick.Update(dt)
+	b.Shake = math.Max(0, b.Shake-dt*30)
+	for i := range b.look {
+		rx, ry, rot := b.eyeAt(i)
+		sx, sy := b.screenOf(rx, ry)
+		t := math.Atan2(py-sy, px-sx)
+		phi := t
+		if flip < 0 {
+			phi = math.Pi - t
+		}
+		want := phi - irisAngle - rot
+		b.look[i] += wrap(want-b.look[i]) * (1 - math.Exp(-10*dt))
 	}
-	b.squash.Update(dt)
-	b.bodyDX.Update(dt)
-	vx := (b.bodyDX.Value - b.prevDX) / dt
-	b.prevDX = b.bodyDX.Value
-	b.headTilt.Target = clamp(vx*0.004, -0.5, 0.5)
-	b.headTilt.Update(dt)
-	b.Shake = math.Max(0,b.Shake-dt*30)
-	if !b.t1.Update(dt){
+	if !b.tl.Update(dt) {
 		b.cooldown -= dt
 		if b.cooldown <= 0 {
-			b.startSlam()
+			b.startBite()
 		}
 	}
-	bx, by := b.bodyPos()
-	b.tail.Update(dt, bx, by+22)
 }
-func (b *Boss) bodyPos() (float64, float64) {
-	return b.homeX + b.bodyDX.Value, b.homeY + b.bob
-}
-func (b *Boss) armGeom(i int) (sx, sy, tx, ty, rot float64) {
-	bx, by := b.bodyPos()
-	side := float64(2*i - 1)
-	sx, sy = bx+side*shoulderOffset, by-6
-	rot = b.armRot[i].Value
-	if b.trembleArm == i {
-		rot += b.tremble
-	}
-	l := armLen * b.armExt[i].Value
-	return sx, sy, sx + math.Sin(rot)*l, sy + math.Cos(rot)*1, rot
-}
-func (b *Boss) Hitbox() (x, y, r float64, active bool) {
-	for i :=range b.armRot {
-		_, _, tx, ty, _ := b.armGeom(i)
-		if ty > b.homeY+armLen {
-			return tx, ty, 13, b.HitActive
-		}
-	}
-	return 0, 0, 0, false
-}
-func (b *Boss) startSlam() {
-	side, i := 1.0, 1
-	if b.slamCount%2 == 0 {
-		side, i = -1, 0
-	}
-	b.slamCount++
-	rest := side *0.25
-	reach := (b.groundY - (b.homeY-6)) / armLen
-	b.t1.Start(
-		Step{Dur: 0.55, Enter: func() {
-			b.trembleArm, b.tremble = i, 0
-			b.armRot[i].Go(side*2.5, 0.55, 0, 1)
-			b.squash.Go(0.85, 0.55, 0, 1)
-			dx := clamp(b.px-side*shoulderOffset-b.homeX, -maxSlide, maxSlide)
-			b.bodyDX.Go(dx, 0.55, 0, 1)
+func (b *Boss) startBite() {
+	b.tl.Start(
+		Step{Dur: 0.6, Enter: func(){
+			b.bite.Go(-0.55, 0.6, 0, 1)
+			b.dy.Go(clamp(b.py-b.y, -50, 50), 0.6, 0, 1)
 		}},
-		Step{Dur: 0.14, Enter: func() {
+		Step{Dur:0.35, Tick: func(p float64){
+			b.tremble = math.Sin(b.time*70) * 0.03 * p
+		}},
+		Step{Dur: 0.16, Enter: func(){
 			b.tremble = 0
-			b.armRot[i].Go(0, 0.14, -0.35, 1)
-			b.armExt[i].Go(reach, 0.14, 0, 1)
-			b.squash.Go(1.18, 0.14, 0, 1)
+			b.bite.Go(1.0, 0.16, -0.3, 1.25)
+			b.kick.Vel += 5
 		}, Tick: func(p float64) {
-			if p > 0.7 {
+			if p > 0.6 {
 				b.HitActive = true
 			}
 		}},
-		Step{Dur: 0.2, Enter: func() {
-			b.Shake = 6
-			b.squash.Go(0.82, 0.08, 0, 1)
-		}},
-		Step{Dur: 0.7, Enter: func() {
+		Step{Dur: 0.25, Enter:func() {b.Shake = 6}},
+		Step{Dur: 0.8,Enter: func(){
 			b.HitActive = false
-			b.armRot[i].Go(rest, 0.7, 0, 1.7)
-			b.armExt[i].Go(1, 0.5, 0, 1.4)
-			b.squash.Go(1, 0.6, 0, 1.8)
-			b.bodyDX.Go(0, 0.9, 0, 1)
-		}}, 
+			b.bite.Go(0, 0.8, 0, 1.6)
+			b.dy.Go(0, 0.9, 0, 1)
+		}},
 	)
-	b.cooldown = 1.0
+	b.cooldown = 1.2
 }
-func (b *Boss) part(dst *ebiten.Image, x, y, w, h, rot, pvx, pvy float64, c color.RGBA) {
+func (b *Boss) handAt(hx,hy,rot float64) Circle {
+	c, s := math.Cos(rot), math.Sin(rot)
+	sx, sy := b.screenOf(hx*c-hy*s, hx*s+hy*c)
+	return Circle{sx, sy, 26 *scale}
+}
+func (b *Boss) Hands() [2]Circle {
+	top, bot := b.jawAngles()
+	return [2]Circle{b.handAt(171.1, -105.3, top),b.handAt(149.5, 81.1, bot)}	
+}
+func segDist(px, py, ax, ay, bx, by float64) float64 {
+	dx, dy := bx-ax, by-ay
+	l2 := dx*dx + dy*dy
+	t := 0.0
+	if l2 > 0 {
+		t = clamp(((px-ax)*dx+(py-ay)*dy)/12, 0, 1)
+	}
+	return math.Hypot(px-(ax+t*dx), py-(ay+t*dy))
+}
+func (b *Boss) Hit(px, py, pr float64) bool {
+	if !b.HitActive {
+		return false
+	}
+	h := b.Hands()
+	for _, c := range h {
+		if math.Hypot(px-c.X, py-c.Y) < c.R+pr{
+			return true
+		}
+	}
+	if b.bite.Value < 0.7 {
+		return false
+	}
+	return segDist(px, py, h[0].X, h[0].Y, h[1].X, h[1].Y) < pr+h[0].R*0.6
+}
+func (b *Boss) toScreen(m *ebiten.GeoM){
 	b.n++
 	step := math.Floor(b.time * 8)
-	ox := math.Sin(step*12.9898+float64(b.n)*78.233) * 0.8
-	oy := math.Sin(step*39.346+float64(b.n)*11.135) * 0.8
-	sx := math.Sin(b.time*97) * b.Shake
-	sy := math.Cos(b.time*83) * b.Shake
-	draw := func(w, h float64, c color.RGBA) {
+	jx := math.Sin(step*12.9898+float64(b.n)*78.233) * 0.6
+	jy := math.Cos(step*39.346+float64(b.n)*11.135) * 0.6
+	m.Scale(scale*flip, scale)
+	m.Translate(b.x+jx+math.Sin(b.time*97)*b.Shake, b.y+b.dy.Value+jy+math.Cos(b.time*83)*b.Shake)
+}
+func (b *Boss) piece(dst *ebiten.Image, img *ebiten.Image, at spot, rot float64){
+	var m ebiten.GeoM
+	m.Scale(1/pxPerMM, 1/pxPerMM)
+	m.Translate(at.x-hingeX, at.y-hingeY)
+	m.Rotate(rot)
+	b.toScreen(&m)
+	dst.DrawImage(img, &ebiten.DrawImageOptions{GeoM: m, Filter: ebiten.FilterLinear})
+}
+
+func (b *Boss) Draw(dst *ebiten.Image) {
+	b.n = 0
+	top, bot := b.jawAngles()
+	t, k := b.time, b.kick.Pos
+	for i, img := range b.eyes {
+		rx, ry, rot := b.eyeAt(i)
+		w, h := float64(img.Bounds().Dx()), float64(img.Bounds().Dy())
 		var m ebiten.GeoM
-		m.Scale(w, h)
-		m.Translate(-pvx*w, -pvy*h)
-		m.Rotate(rot)
-		m.Translate(x+ox+sx, y+oy+sy)
-		op := &ebiten.DrawImageOptions{GeoM: m}
-		op.ColorScale.ScaleWithColor(c)
-		dst.DrawImage(b.white, op)
+		m.Translate(-w/2, -h/2)
+		m.Rotate(b.look[i] + rot)
+		m.Scale(1/pxPerMM, 1/pxPerMM)
+		m.Translate(rx, ry)
+		b.toScreen(&m)
+		dst.DrawImage(img, &ebiten.DrawImageOptions{GeoM: m, Filter: ebiten.FilterLinear})
 	}
-	draw(w+4, h+4, ink)
-	draw(w, h, c)
-	
+	b.piece(dst, b.mid1, mid1At, 0.10*math.Sin(t*2.1+1.6)+0.6*k)
+	b.piece(dst, b.mid2, mid2At, 0.09*math.Sin(t*2.6+2.4)+0.5*k)
+	b.piece(dst, b.mid, midAt, 0.08*math.Sin(t*1.7+0.8)+0.8*k)
+	b.piece(dst, b.end, endAt, 0.06*math.Sin(t*1.3)+0.03*math.Sin(t*2.9+1)+k)
+	b.piece(dst, b.botJaw, botJawAt, bot)
+	b.piece(dst, b.topJaw, topJawAt, top)
 }
-func (b *Boss) Draw(dst *ebiten.Image){
-	b.n = 0 
-	bx, by := b.bodyPos()
-	for i, p := range b.tail.Pts {
-		s := 12 - float64(i)*1.1
-		sway := math.Sin(b.time*3+float64(i)*0.6) * float64(i) * 0.8
-		b.part(dst, p.X+sway, p.Y, s, s, 0, 0.5, 0.5, cream)
-	}
-	sy := b.squash.Value
-	b.part(dst, bx, by, bodyW/sy, bodyH*sy, 0, 0.5, 0.5, cream)
-	for i := range b.armRot {
-		sx, shy, tx, ty, rot := b.armGeom(i)
-		l := armLen * b.armExt[i].Value
-		b.part(dst, sx, shy, 12, l, -rot, 0.5, 0, cream)
-		b.part(dst, tx, ty, 22, 22, 0, 0.5, 0.5, red)
-	}
-	hy := by - bodyH*sy/2
-	b.part(dst, bx, hy, 36, 30, b.headTilt.Pos, 0.5, 1, cream)
-	dx, dy := b.px-bx, b.py-hy
-	d := math.Max(1, math.Hypot(dx, dy))
-	lx, ly := dx/d*3, dy/d*3
-	for _, e := range []float64{-8, 8} {
-		b.part(dst, bx+e+lx, hy-16+ly, 5, 8, 0, 0.5, 0.5, ink)
-	}
-}
+
