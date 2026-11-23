@@ -5,6 +5,7 @@ import (
 	"log"
 	"time"
 
+	"github.com/fieldworklabscontact-a11y/ACSII-VOID/boss"
 	"github.com/fieldworklabscontact-a11y/ACSII-VOID/physics"
 	"github.com/hajimehoshi/ebiten/v2"
 )
@@ -18,6 +19,7 @@ const (
 type Game struct{
 	sprite *ebiten.Image
 	engine *physics.ShipEngine
+	boss *boss.Boss
 	lastFrame time.Time
 }
 func NewGame() *Game {
@@ -34,6 +36,7 @@ func NewGame() *Game {
 	return &Game{
 		sprite: img,
 		engine: engine,
+		boss: boss.New(screenWidth/2, 50, screenHeight-24),
 		lastFrame: time.Now(),
 	}
 }
@@ -41,6 +44,8 @@ func (g *Game) Update() error {
 	now := time.Now()
 	dt := now.Sub(g.lastFrame).Seconds()
 	g.lastFrame = now
+	g.boss.Update(1.0/60, g.engine.X, g.engine.Y)
+
 	if ebiten.IsKeyPressed(ebiten.KeyArrowLeft) || ebiten.IsKeyPressed(ebiten.KeyA){
 		g.engine.Left.HandlePress()
 	}else{
@@ -74,6 +79,7 @@ func (g *Game) Draw(screen *ebiten.Image) {
 	op.GeoM.Translate(float64(spriteSize)/2,float64(spriteSize)/2)
 	op.GeoM.Translate(g.engine.X,g.engine.Y)
 	screen.DrawImage(g.sprite, op)
+	g.boss.Draw(screen)
 }
 
 func (g *Game) Layout(outsideWidth, outsideHeight int) (int, int){

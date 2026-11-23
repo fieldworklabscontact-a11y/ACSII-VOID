@@ -3,8 +3,6 @@ Play in your browser: Launch ASCII-VOID: https://ascii-void.netlify.app/
 Arrow keys to move around.
 **An experimental space game built with Go and Ebitengine.**
 
-ASCII-VOID is an experimental game development project exploring procedural visuals, mathematical movement systems, fractal geometry, and unconventional approaches to rendering.
-
 The project is being developed in Go using Ebitengine.
 
 ##Documentation:
@@ -23,8 +21,6 @@ ASCII-VOID is actively being developed. Current implemented features and experim
 
 ## Technical Direction
 
-The project is being developed as a modular system, with an emphasis on understanding and implementing the underlying mathematics and engineering rather than relying on prebuilt game systems.
-
 Planned development areas include:
 
 - Procedural and fractal-based geometry.
@@ -35,13 +31,12 @@ Planned development areas include:
 - Fractal-based kaiju encounters and combat.
 - Expanded world and gameplay systems.
 
-These are development goals, not claims of completed functionality.
+These are development goals, and will likely adjust or update them as I progress.
 
 ## Technology
 
 - **Language:** Go
 - **Game engine:** Ebitengine
-- **Animation experiments:** Bézier interpolation
 - **Browser support:** WebAssembly
 
 ## Project Philosophy
