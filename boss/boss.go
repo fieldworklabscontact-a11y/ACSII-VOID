@@ -1,4 +1,3 @@
-
 package boss
 
 import (
@@ -53,22 +52,22 @@ type Circle struct {
 }
 
 type Boss struct {
-	x, y     float64
-	time     float64
-	bite     Eased
-	dy       Eased
-	kick     Spring
-	tl       Timeline
-	cooldown float64
-	tremble  float64
-	px, py   float64
-	look     [4]float64
-	Shake    float64
+	x, y      float64
+	time      float64
+	bite      Eased
+	dy        Eased
+	kick      Spring
+	tl        Timeline
+	cooldown  float64
+	tremble   float64
+	px, py    float64
+	look      [4]float64
+	Shake     float64
 	HitActive bool
 
 	topJaw, botJaw, end, mid, mid1, mid2 *ebiten.Image
-	eyes                                   [4]*ebiten.Image
-	n                                      int
+	eyes                                 [4]*ebiten.Image
+	n                                    int
 }
 
 func load(name string) *ebiten.Image {
@@ -116,7 +115,7 @@ func wrap(a float64) float64 {
 func (b *Boss) jawAngles() (top, bot float64) {
 	v := b.bite.Value + b.tremble + 0.04*math.Sin(b.time*1.6)
 
-	return 0.52 * v, 0.50 * v
+	return -0.52 * v, 0.50 * v
 }
 
 func (b *Boss) eyeAt(i int) (rx, ry, rot float64) {
