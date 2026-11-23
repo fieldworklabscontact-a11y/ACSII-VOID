@@ -117,6 +117,8 @@ func (b *Boss) Update(dt, px, py float64) {
 	}
 }
 func (b *Boss) startBite() {
+	func (b *Boss) startBite() {
+	println("bite!")
 	b.tl.Start(
 		Step{Dur: 0.6, Enter: func(){
 			b.bite.Go(-0.55, 0.6, 0, 1)
