@@ -894,3 +894,4 @@ func (e *Eye) draw(dst *ebiten.Image, b *Boss, sx, sy float64) {
 	m.Translate(x+jx+sx, y+jy+sy)
 	dst.DrawImage(e.img, &ebiten.DrawImageOptions{GeoM: m, Filter: ebiten.FilterLinear})
 }
+//
