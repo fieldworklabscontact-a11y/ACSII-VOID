@@ -7,6 +7,7 @@ import (
 
 	"github.com/hajimehoshi/ebiten/v2"
 )
+//go:embed assets/*.png
 var assets embed.FS
 const (
 	pxPerMM = 1.2
