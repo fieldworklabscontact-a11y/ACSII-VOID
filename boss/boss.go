@@ -115,7 +115,7 @@ func wrap(a float64) float64 {
 func (b *Boss) jawAngles() (top, bot float64) {
 	v := b.bite.Value + b.tremble + 0.04*math.Sin(b.time*1.6)
 
-	return -0.52 * v, 0.50 * v
+	return 0.50 * v, -0.52 * v
 }
 
 func (b *Boss) eyeAt(i int) (rx, ry, rot float64) {
