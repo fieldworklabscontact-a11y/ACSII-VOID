@@ -11,8 +11,8 @@ import (
 )
 
 const (
-	screenWidth  = 560
-	screenHeight = 240
+	screenWidth  = 600
+	screenHeight = 500
 	spriteSize   = 16
 	updateDelta  = 1.0 / 60.0
 )
