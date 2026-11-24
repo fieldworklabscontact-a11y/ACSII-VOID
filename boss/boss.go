@@ -14,9 +14,6 @@ import (
 var assets embed.FS
 
 const (
-	arenaW, arenaH = 560.0, 240.0
-
-	pxPerMM   = 3.6
 	branchLen = 341.0
 	baseX     = 8.5
 	baseY     = 224.3
@@ -37,16 +34,17 @@ type spot struct{ x, y float64 }
 
 type vinePiece struct {
 	name       string
+	mm         float64
 	at         spot
 	amp, freq  float64
 	phase, kck float64
 }
 
 var vine = [4]vinePiece{
-	{"midbranch_1", spot{6.448102, 174.35862}, 0.05, 2.1, 1.6, 0.3},
-	{"midbranch_2", spot{20.814335, 176.88405}, 0.05, 2.6, 2.4, 0.4},
-	{"midbranch", spot{89.826928, 173.82843}, 0.06, 1.7, 0.8, 0.7},
-	{"endbranch", spot{79.033332, 133.82167}, 0.05, 1.3, 0.0, 1.0},
+	{"midbranch_1", 238.3, spot{6.448102, 174.35862}, 0.05, 2.1, 1.6, 0.3},
+	{"midbranch_2", 118.2, spot{20.814335, 176.88405}, 0.05, 2.6, 2.4, 0.4},
+	{"midbranch", 142.5, spot{89.826928, 173.82843}, 0.06, 1.7, 0.8, 0.7},
+	{"endbranch", 260.8, spot{79.033332, 133.82167}, 0.05, 1.3, 0.0, 1.0},
 }
 
 type phase struct {
@@ -82,6 +80,58 @@ func load(name string) *ebiten.Image {
 	return ebiten.NewImageFromImage(img)
 }
 
+func loadRim(name string, mm float64, c color.RGBA) *ebiten.Image {
+	f, err := assets.Open("assets/" + name + ".png")
+	if err != nil {
+		panic(err)
+	}
+	defer f.Close()
+	src, err := png.Decode(f)
+	if err != nil {
+		panic(err)
+	}
+	bd := src.Bounds()
+	w, h := bd.Dx(), bd.Dy()
+	r := int(math.Round(0.55 * float64(w) / mm))
+	if r < 1 {
+		r = 1
+	}
+	a := make([]uint8, w*h)
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			_, _, _, al := src.At(bd.Min.X+x, bd.Min.Y+y).RGBA()
+			a[y*w+x] = uint8(al >> 8)
+		}
+	}
+	tmp := make([]uint8, w*h)
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			var m uint8
+			for k := -r; k <= r; k++ {
+				if xx := x + k; xx >= 0 && xx < w && a[y*w+xx] > m {
+					m = a[y*w+xx]
+				}
+			}
+			tmp[y*w+x] = m
+		}
+	}
+	out := image.NewRGBA(image.Rect(0, 0, w, h))
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			var m uint8
+			for k := -r; k <= r; k++ {
+				if yy := y + k; yy >= 0 && yy < h && tmp[yy*w+x] > m {
+					m = tmp[yy*w+x]
+				}
+			}
+			if m > 24 {
+				out.SetRGBA(x, y, c)
+			}
+		}
+	}
+	return ebiten.NewImageFromImage(out)
+}
+
 func pixel(c color.RGBA) *ebiten.Image {
 	img := ebiten.NewImage(1, 1)
 	img.Fill(c)
@@ -89,7 +139,7 @@ func pixel(c color.RGBA) *ebiten.Image {
 }
 
 func clamp(v, lo, hi float64) float64 { return math.Max(lo, math.Min(hi, v)) }
-func wrap(a float64) float64         { return math.Atan2(math.Sin(a), math.Cos(a)) }
+func wrap(a float64) float64          { return math.Atan2(math.Sin(a), math.Cos(a)) }
 
 func segDist(px, py, ax, ay, bx, by float64) float64 {
 	dx, dy := bx-ax, by-ay
@@ -102,6 +152,7 @@ func segDist(px, py, ax, ay, bx, by float64) float64 {
 }
 
 type Boss struct {
+	W, H             float64
 	px, py, dt, time float64
 	n                int
 	seed             uint32
@@ -133,14 +184,18 @@ type Boss struct {
 	buf                                           *ebiten.Image
 }
 
-func New(_, _, _ float64) *Boss {
-	b := &Boss{seed: 12345, nextGlitch: 4, bcool: 3, inten: 0.3}
-	imgs := [4]*ebiten.Image{}
+func New(w, h int) *Boss {
+	b := &Boss{W: float64(w), H: float64(h), seed: 12345, nextGlitch: 4, bcool: 3, inten: 0.3}
+	if onlyPhase >= 0 {
+		b.ph = onlyPhase
+	}
+	imgs, rims := [4]*ebiten.Image{}, [4]*ebiten.Image{}
 	for j, p := range vine {
 		imgs[j] = load(p.name)
+		rims[j] = loadRim(p.name, p.mm, color.RGBA{190, 35, 55, 255})
 	}
 	newBranch := func(i int) *Branch {
-		br := &Branch{img: imgs, seed: float64(i) * 2.3, scale: 3}
+		br := &Branch{img: imgs, rim: rims, seed: float64(i) * 2.3, scale: 3}
 		br.kick = Spring{K: 90, Damp: 0.9}
 		return br
 	}
@@ -153,23 +208,48 @@ func New(_, _, _ float64) *Boss {
 		br.scale, br.reach = 3.2, 600
 		b.amb[i] = br
 	}
-	b.amb[0].rootX, b.amb[0].rootY, b.amb[0].angle = -30, 10, 0.62
-	b.amb[1].rootX, b.amb[1].rootY, b.amb[1].angle = arenaW+30, arenaH+10, math.Pi+0.5
 
-	b.eyes[Executioner] = newEye(Executioner, load("eye2"), 3.6, 0, 120, 0.1)
-	b.eyes[Stalker] = newEye(Stalker, load("eye3"), 3.6, 1, 120, 0.04)
-	b.eyes[Divider] = newEye(Divider, load("eye1"), 5.0, 2, 280, 0.3)
-	b.eyes[Witness] = newEye(Witness, load("eye4"), 4.4, 3, 300, 0.55)
+	b.eyes[Executioner] = newEye(b, Executioner, load("eye2"), 45.7, 3.6, 0, 0.1)
+	b.eyes[Stalker] = newEye(b, Stalker, load("eye3"), 45.7, 3.6, 1, 0.04)
+	b.eyes[Divider] = newEye(b, Divider, load("eye1"), 25, 5.0, 2, 0.3)
+	b.eyes[Witness] = newEye(b, Witness, load("eye4"), 25, 4.4, 3, 0.55)
+	b.layout()
 
 	b.warnDim = pixel(color.RGBA{110, 18, 28, 110})
 	b.warnHot = pixel(color.RGBA{255, 70, 80, 255})
 	b.beamOut = pixel(color.RGBA{255, 40, 60, 255})
-	b.beamCore = pixel(color.RGBA{255, 240, 240, 255})
+	b.beamCore = pixel(color.RGBA{150, 0, 28, 255})
 	b.flashPix = pixel(color.RGBA{90, 20, 25, 90})
 	for i := range b.black {
 		b.black[i] = pixel(color.RGBA{0, 0, 0, uint8(255 * i / 9)})
 	}
 	return b
+}
+
+func (b *Boss) PlayerHit() {
+	b.react()
+	b.tear = 1
+	b.flash = math.Max(b.flash, 0.04)
+}
+
+func (b *Boss) Resize(w, h int) {
+	if float64(w) == b.W && float64(h) == b.H {
+		return
+	}
+	b.W, b.H = float64(w), float64(h)
+	b.layout()
+}
+
+func (b *Boss) layout() {
+	b.amb[0].rootX, b.amb[0].rootY, b.amb[0].angle = -30, 10, 0.62
+	b.amb[1].rootX, b.amb[1].rootY, b.amb[1].angle = b.W+30, b.H+10, math.Pi+0.5
+	for _, e := range b.eyes {
+		lo, hi := e.alongRange()
+		if e.along.Value == 0 {
+			e.along.Set((lo + hi) / 2)
+		}
+		e.along.Set(clamp(e.along.Value, lo, hi))
+	}
 }
 
 func (b *Boss) rnd() float64 {
@@ -315,7 +395,7 @@ func (b *Boss) Update(dt, px, py float64) {
 }
 
 func (b *Boss) farSide() float64 {
-	if b.px < arenaW/2 {
+	if b.px < b.W/2 {
 		return 1
 	}
 	return -1
@@ -325,26 +405,27 @@ func (b *Boss) launch(n int) {
 	side := b.farSide()
 	switch n {
 	case 0:
-		b.branches[0].strike(b, sideStrike(side, 3.4, int(b.rnd()*3), 0))
+		b.branches[0].strike(b, b.sideStrike(side, 3.4, int(b.rnd()*3), 0))
 	case 1:
-		sp0 := sideStrike(-1, 2.8, 0, 0)
-		sp1 := sideStrike(1, 2.8, 0, 0.25)
-		sp1.yOff = clamp(arenaH/2-b.py, -1, 1) * 90
+		sp0 := b.sideStrike(-1, 2.8, 0, 0)
+		sp1 := b.sideStrike(1, 2.8, 0, 0.25)
+		sp1.yOff = clamp(b.H/2-b.py, -1, 1) * 0.375 * b.H
 		sp1.retractDur = 1.2
-		sp2 := sideStrike(1, 2.6, 0, 0.5)
+		sp2 := b.sideStrike(1, 2.6, 0, 0.5)
 		sp2.vertical = true
-		sp2.rootX, sp2.rootY, sp2.angle, sp2.reach = clamp(b.px, 60, arenaW-60), -20, math.Pi/2, arenaH*1.25
+		sp2.rootX, sp2.rootY, sp2.angle, sp2.reach = clamp(b.px, 60, b.W-60), -20, math.Pi/2, b.H*1.25
 		sp2.retractDur = 0.6
 		b.branches[0].strike(b, sp0)
 		b.branches[1].strike(b, sp1)
 		b.branches[2].strike(b, sp2)
 	case 2:
-		cy := clamp(b.py, 90, 150)
-		b.branches[0].strike(b, crossStrike(1, cy, 0, 0.7, 0))
-		b.branches[1].strike(b, crossStrike(-1, cy, 0.15, 1.0, 1))
+		cy := clamp(b.py, 0.375*b.H, 0.625*b.H)
+		b.branches[0].strike(b, b.crossStrike(1, cy, 0, 0.7, 0))
+		b.branches[1].strike(b, b.crossStrike(-1, cy, 0.15, 1.0, 1))
 	case 3:
-		sp := sideStrike(1, 3.0, 3, 0)
-		sp.rootX, sp.rootY, sp.angle, sp.reach = clamp(arenaW-b.px, 120, arenaW-120), -20, math.Pi/2, arenaH*1.2
+		sp := b.sideStrike(1, 3.0, 3, 0)
+		m := math.Min(120, b.W/4)
+		sp.rootX, sp.rootY, sp.angle, sp.reach = clamp(b.W-b.px, m, b.W-m), -20, math.Pi/2, b.H*1.2
 		sp.track = false
 		sp.windup = 0.8
 		b.branches[0].strike(b, sp)
@@ -366,6 +447,7 @@ func (b *Boss) Hit(px, py, pr float64) bool {
 }
 
 func (b *Boss) Draw(dst *ebiten.Image) {
+	b.Resize(dst.Bounds().Dx(), dst.Bounds().Dy())
 	b.n = 0
 	sx := math.Sin(b.time*97) * b.Shake
 	sy := math.Cos(b.time*83) * b.Shake
@@ -373,10 +455,10 @@ func (b *Boss) Draw(dst *ebiten.Image) {
 	for _, br := range b.amb {
 		br.draw(dst, b, 0, 0)
 	}
+	b.drawDark(dst)
 	for _, br := range b.branches {
 		br.draw(dst, b, sx, sy)
 	}
-	b.drawDark(dst)
 	for _, br := range b.branches {
 		br.drawWarn(dst, b, sx, sy)
 	}
@@ -390,7 +472,7 @@ func (b *Boss) Draw(dst *ebiten.Image) {
 		e.draw(dst, b, sx, sy)
 	}
 	if b.flash > 0 {
-		b.rect(dst, b.flashPix, 0, 0, arenaW, arenaH)
+		b.rect(dst, b.flashPix, 0, 0, b.W, b.H)
 	}
 	b.drawTear(dst)
 }
@@ -426,12 +508,12 @@ func (b *Boss) alpha(a float64) *ebiten.Image {
 }
 
 func (b *Boss) outside(dst, pix *ebiten.Image, cx, cy, half float64) {
-	x0, x1 := clamp(cx-half, 0, arenaW), clamp(cx+half, 0, arenaW)
-	y0, y1 := clamp(cy-half, 0, arenaH), clamp(cy+half, 0, arenaH)
-	b.rect(dst, pix, 0, 0, arenaW, y0)
-	b.rect(dst, pix, 0, y1, arenaW, arenaH)
+	x0, x1 := clamp(cx-half, 0, b.W), clamp(cx+half, 0, b.W)
+	y0, y1 := clamp(cy-half, 0, b.H), clamp(cy+half, 0, b.H)
+	b.rect(dst, pix, 0, 0, b.W, y0)
+	b.rect(dst, pix, 0, y1, b.W, b.H)
 	b.rect(dst, pix, 0, y0, x0, y1)
-	b.rect(dst, pix, x1, y0, arenaW, y1)
+	b.rect(dst, pix, x1, y0, b.W, y1)
 }
 
 func (b *Boss) beat() float64 {
@@ -442,12 +524,12 @@ func (b *Boss) beat() float64 {
 func (b *Boss) drawDark(dst *ebiten.Image) {
 	d := b.dark.Value
 	if d >= 0.02 {
-		b.rect(dst, b.alpha(0.3*d), 0, 0, arenaW, arenaH)
+		b.rect(dst, b.alpha(0.3*d), 0, 0, b.W, b.H)
 		b.outside(dst, b.alpha(0.35*d), b.px, b.py, 140)
 		b.outside(dst, b.alpha(0.4*d), b.px, b.py, 80)
 	}
 	if b.fight {
-		b.outside(dst, b.alpha(0.16*b.beat()*b.inten), arenaW/2, arenaH/2, 205)
+		b.outside(dst, b.alpha(0.16*b.beat()*b.inten), b.W/2, b.H/2, 0.37*b.W)
 	}
 }
 
@@ -481,7 +563,7 @@ func (b *Boss) drawTear(dst *ebiten.Image) {
 }
 
 type Branch struct {
-	img                                  [4]*ebiten.Image
+	img, rim                             [4]*ebiten.Image
 	running, live, danger, warn, ambient bool
 	rootX, rootY, angle, scale, reach    float64
 	ext, tilt                            Eased
@@ -499,26 +581,26 @@ type strikeSpec struct {
 	windup, thrust, retractDur        float64
 }
 
-func sideStrike(side, scale float64, mode int, delay float64) strikeSpec {
-	s := strikeSpec{rootY: arenaH / 2, track: true, scale: scale, mode: mode, delay: delay,
-		reach: arenaW + 60, enter: 0.5, trackT: 1.4, windup: 0.6, thrust: 0.42, retractDur: 0.9}
+func (b *Boss) sideStrike(side, scale float64, mode int, delay float64) strikeSpec {
+	s := strikeSpec{rootY: b.H / 2, track: true, scale: scale, mode: mode, delay: delay,
+		reach: b.W + 60, enter: 0.5, trackT: 1.4, windup: 0.6, thrust: 0.42, retractDur: 0.9}
 	if side > 0 {
-		s.rootX, s.angle = arenaW+20, math.Pi
+		s.rootX, s.angle = b.W+20, math.Pi
 	} else {
 		s.rootX, s.angle = -20, 0
 	}
 	return s
 }
 
-func crossStrike(side, cy, delay, retract float64, mode int) strikeSpec {
-	s := strikeSpec{scale: 3.0, mode: mode, reach: arenaW + 120, delay: delay, enter: 0.5, trackT: 0.15,
+func (b *Boss) crossStrike(side, cy, delay, retract float64, mode int) strikeSpec {
+	s := strikeSpec{scale: 3.0, mode: mode, reach: b.W + 120, delay: delay, enter: 0.5, trackT: 0.15,
 		windup: 0.7, thrust: 0.46, retractDur: retract}
 	if side > 0 {
-		s.rootX, s.rootY = -20, cy-80
+		s.rootX, s.rootY = -20, cy-0.33*b.H
 	} else {
-		s.rootX, s.rootY = arenaW+20, cy+80
+		s.rootX, s.rootY = b.W+20, cy+0.33*b.H
 	}
-	s.angle = math.Atan2(cy-s.rootY, arenaW/2-s.rootX)
+	s.angle = math.Atan2(cy-s.rootY, b.W/2-s.rootX)
 	return s
 }
 
@@ -533,9 +615,9 @@ func (br *Branch) strike(b *Boss, s strikeSpec) {
 	}
 	follow := func(rate float64) {
 		if s.vertical {
-			br.rootX += (clamp(b.px, 40, arenaW-40) - br.rootX) * (1 - math.Exp(-rate*b.dt))
+			br.rootX += (clamp(b.px, 40, b.W-40) - br.rootX) * (1 - math.Exp(-rate*b.dt))
 		} else {
-			br.rootY += (clamp(b.py+s.yOff, 30, arenaH-30) - br.rootY) * (1 - math.Exp(-rate*b.dt))
+			br.rootY += (clamp(b.py+s.yOff, 30, b.H-30) - br.rootY) * (1 - math.Exp(-rate*b.dt))
 		}
 	}
 	jit := func(v float64) float64 { return v * b.rr(0.85, 1.2) }
@@ -551,9 +633,9 @@ func (br *Branch) strike(b *Boss, s strikeSpec) {
 			br.live = true
 			if s.track {
 				if s.vertical {
-					br.rootX = clamp(b.px, 40, arenaW-40)
+					br.rootX = clamp(b.px, 40, b.W-40)
 				} else {
-					br.rootY = clamp(b.py+s.yOff, 30, arenaH-30)
+					br.rootY = clamp(b.py+s.yOff, 30, b.H-30)
 				}
 			}
 			br.ext.Go(0.22, s.enter, 0.1, 1)
@@ -656,7 +738,7 @@ func (br *Branch) updateAmbient(b *Boss, dt float64, fight bool) {
 		want = 0.02
 	}
 	br.ext.Value += (want - br.ext.Value) * (1 - math.Exp(-2*dt))
-	br.tilt.Value = 0.07*math.Sin(br.t*0.6+br.seed) + 0.0004*(b.py-arenaH/2)
+	br.tilt.Value = 0.07*math.Sin(br.t*0.6+br.seed) + 0.0004*(b.py-b.H/2)
 }
 
 func (br *Branch) geometry() (tx, ty, dx, dy, a, L float64) {
@@ -700,7 +782,8 @@ func (br *Branch) draw(dst *ebiten.Image, b *Boss, sx, sy float64) {
 	for i, p := range vine {
 		sway := p.amp*math.Sin(br.t*p.freq+p.phase+br.seed) + p.kck*br.kick.Pos*0.25
 		var m ebiten.GeoM
-		m.Scale(1/pxPerMM, 1/pxPerMM)
+		k := p.mm / float64(br.img[i].Bounds().Dx())
+		m.Scale(k, k)
 		m.Translate(p.at.x-baseX, p.at.y-baseY)
 		m.Rotate(sway)
 		m.Rotate(axisFix)
@@ -711,7 +794,9 @@ func (br *Branch) draw(dst *ebiten.Image, b *Boss, sx, sy float64) {
 		m.Rotate(a)
 		jx, jy := b.jit()
 		m.Translate(bx+jx, by+jy)
-		dst.DrawImage(br.img[i], &ebiten.DrawImageOptions{GeoM: m, Filter: ebiten.FilterLinear})
+		op := &ebiten.DrawImageOptions{GeoM: m, Filter: ebiten.FilterLinear}
+		dst.DrawImage(br.rim[i], op)
+		dst.DrawImage(br.img[i], op)
 	}
 }
 
@@ -732,9 +817,11 @@ type mark struct {
 }
 
 type Eye struct {
+	b     *Boss
 	kind  int
 	edge  int
 	img   *ebiten.Image
+	mm    float64
 	scale float64
 
 	active, running, danger bool
@@ -752,26 +839,25 @@ type Eye struct {
 	marks                               [3]mark
 }
 
-func newEye(kind int, img *ebiten.Image, scale float64, edge int, along, lag float64) *Eye {
-	e := &Eye{kind: kind, edge: edge, img: img, scale: scale, lag: lag,
+func newEye(b *Boss, kind int, img *ebiten.Image, mm, scale float64, edge int, lag float64) *Eye {
+	e := &Eye{b: b, kind: kind, edge: edge, img: img, mm: mm, scale: scale, lag: lag,
 		nextBlink: 1.5 + float64(kind), nextGlance: 1 + 0.7*float64(kind), nextDrift: 3 + float64(kind)}
-	e.along.Set(along)
 	e.ent.Set(0.8)
 	return e
 }
 
-func (e *Eye) size() float64 { return float64(e.img.Bounds().Dx()) / pxPerMM * e.scale }
+func (e *Eye) size() float64 { return e.mm * e.scale }
 
 func (e *Eye) home() (float64, float64) {
 	switch e.edge {
 	case 0:
 		return 12, e.along.Value
 	case 1:
-		return arenaW - 12, e.along.Value
+		return e.b.W - 12, e.along.Value
 	case 2:
 		return e.along.Value, 12
 	}
-	return e.along.Value, arenaH - 12
+	return e.along.Value, e.b.H - 12
 }
 
 func (e *Eye) out() (float64, float64) {
@@ -800,9 +886,9 @@ func (e *Eye) ang(b *Boss) float64 {
 
 func (e *Eye) alongRange() (float64, float64) {
 	if e.edge < 2 {
-		return 50, 190
+		return 0.2 * e.b.H, 0.8 * e.b.H
 	}
-	return 90, 470
+	return 0.16 * e.b.W, 0.84 * e.b.W
 }
 
 func (e *Eye) think(b *Boss, dt float64) {
@@ -967,10 +1053,8 @@ func (e *Eye) scriptExecutioner(b *Boss) []Step {
 		e.width = 40 * env
 		e.danger = env > 0.4
 	}}
-	_, py := e.center()
-	_ = py
 	steps := []Step{
-		e.emerge(b, 0.5, b.rr(60, 180)),
+		e.emerge(b, 0.5, b.rr(0.25*b.H, 0.75*b.H)),
 		{Dur: b.rr(0.8, 1.3), Enter: func() { e.mode = mTrack }},
 		e.notice(b),
 		lock(lockT),
@@ -991,10 +1075,10 @@ func (e *Eye) scriptExecutioner(b *Boss) []Step {
 
 func (e *Eye) scriptStalker(b *Boss) []Step {
 	steps := []Step{
-		e.emerge(b, 0.5, 0),
+		e.emerge(b, 0.5, clamp(b.py, 0.2*b.H, 0.8*b.H)),
 		{Dur: 0.7, Enter: func() {
 			e.mode = mTrack
-			e.along.Go(clamp(b.py, 50, 190), 0.7, 0.2, 1)
+			e.along.Go(clamp(b.py, 0.2*b.H, 0.8*b.H), 0.7, 0.2, 1)
 		}},
 		{Dur: 0.45, Enter: func() { e.mode, e.aim = mCharge, e.ang(b) }, Tick: func(p float64) {
 			e.aim += wrap(e.ang(b)-e.aim) * (1 - math.Exp(-6*b.dt))
@@ -1019,9 +1103,9 @@ func (e *Eye) scriptStalker(b *Boss) []Step {
 }
 
 func (e *Eye) scriptDivider(b *Boss) []Step {
-	along := b.rr(300, 430)
-	if b.px > arenaW/2 {
-		along = b.rr(130, 260)
+	along := b.rr(0.54*b.W, 0.77*b.W)
+	if b.px > b.W/2 {
+		along = b.rr(0.23*b.W, 0.46*b.W)
 	}
 	return []Step{
 		e.emerge(b, 0.6, along),
@@ -1055,7 +1139,7 @@ func (e *Eye) scriptDivider(b *Boss) []Step {
 
 func (e *Eye) scriptWitness(b *Boss) []Step {
 	steps := []Step{
-		e.emerge(b, 0.5, b.rr(120, 440)),
+		e.emerge(b, 0.5, b.rr(0.2*b.W, 0.8*b.W)),
 		{Dur: 0.5, Enter: func() { e.mode = mTrack }},
 	}
 	for i := 0; i < 3; i++ {
@@ -1072,7 +1156,7 @@ func (e *Eye) scriptWitness(b *Boss) []Step {
 				d := b.rr(70, 120)
 				x, y = b.px+math.Cos(a)*d, b.py+math.Sin(a)*d
 			}
-			e.marks[i] = mark{x: clamp(x, 40, arenaW-40), y: clamp(y, 40, arenaH-40), on: true}
+			e.marks[i] = mark{x: clamp(x, 40, b.W-40), y: clamp(y, 40, b.H-40), on: true}
 			e.pop.Go(0.1, 0.04, 0, 1)
 		}})
 	}
@@ -1156,7 +1240,7 @@ func (e *Eye) draw(dst *ebiten.Image, b *Boss, sx, sy float64) {
 	jx, jy := b.jit()
 	w, h := float64(e.img.Bounds().Dx()), float64(e.img.Bounds().Dy())
 	heart := 0.035 * b.beat() * (0.4 + b.inten)
-	s := e.scale / pxPerMM * (1 + e.pulse + e.pop.Value + heart)
+	s := e.size() / w * (1 + e.pulse + e.pop.Value + heart)
 	var m ebiten.GeoM
 	m.Translate(-w/2, -h/2)
 	m.Rotate(e.look - irisAngle)

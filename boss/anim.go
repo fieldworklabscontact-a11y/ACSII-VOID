@@ -1,4 +1,3 @@
-
 package boss
 
 import "math"
@@ -15,8 +14,8 @@ func cubicBezier(t, vi, vf, p1, p2 float64) float64 {
 }
 
 type Eased struct {
-	Value       float64
-	from, to    float64
+	Value          float64
+	from, to       float64
 	t, dur, p1, p2 float64
 }
 
