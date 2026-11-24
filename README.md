@@ -1,5 +1,5 @@
 # ASCII-VOID
-Play in your browser: Launch ASCII-VOID: https://ascii-void.netlify.app/
+Play in your browser: Launch ASCII-VOID: https://strong-croissant-e287e0.netlify.app
 Arrow keys to move around.
 **An experimental space game built with Go and Ebitengine.**
 
@@ -18,6 +18,11 @@ ASCII-VOID is actively being developed. Current implemented features and experim
 - **Directional orientation:** The player representation rotates according to its total velocity vector.
 - **Rendering experiments:** Screen resolution, pixel smoothing, and display behavior experimentation.
 - **WebAssembly support:** A browser-compatible build that runs through Go's WebAssembly runtime.
+-**Procedurally animated boss:** An environmental creature built from my own SVG art, with huge branches entering from off-screen and eyes at the screen edges. It is never fully visible.
+-**Four eyes with distinct attacks:** The Executioner, Stalker, Divider, and Witness are always active, each with its own state machine, coordinated by a director that combines their attacks.
+-**Boss phases:** A scripted phase sequence that controls which eyes and branches are active, how intense the attacks are, and when the screen goes dark.
+-**Environmental manifestations:** Screen distortion, abrupt darkness, glitching, screen shake, and enormous shapes entering the viewport.
+-**Hit feedback:** Just Shapes & Beats-style feedback on damage, with hitstop, screen flash, shake, shards, and HP pips.
 
 ## Technical Direction
 
