@@ -23,8 +23,14 @@ const (
 	axisFix   = 0.2413
 	irisAngle = 0.1
 
-	numAttacks = 7
-	only       = -1
+	onlyPhase = -1
+)
+
+const (
+	Executioner = iota
+	Stalker
+	Divider
+	Witness
 )
 
 type spot struct{ x, y float64 }
@@ -41,6 +47,26 @@ var vine = [4]vinePiece{
 	{"midbranch_2", spot{20.814335, 176.88405}, 0.05, 2.6, 2.4, 0.4},
 	{"midbranch", spot{89.826928, 173.82843}, 0.06, 1.7, 0.8, 0.7},
 	{"endbranch", spot{79.033332, 133.82167}, 0.05, 1.3, 0.0, 1.0},
+}
+
+type phase struct {
+	mask   int
+	dur    float64
+	inten  float64
+	rest   bool
+	dark   bool
+	branch float64
+}
+
+var script = []phase{
+	{mask: 1, dur: 16, inten: 0.5, branch: 5.5},
+	{rest: true, dur: 3.5},
+	{mask: 2 | 8, dur: 18, inten: 0.7, branch: 5},
+	{rest: true, dur: 3.5},
+	{mask: 1 | 4, dur: 18, inten: 0.85, branch: 4.5},
+	{rest: true, dur: 3.5},
+	{mask: 15, dur: 24, inten: 1, dark: true, branch: 4},
+	{rest: true, dur: 6},
 }
 
 func load(name string) *ebiten.Image {
@@ -86,18 +112,21 @@ type Boss struct {
 	tear  float64
 	flash float64
 	dark  Eased
+	heart float64
+	inten float64
 
-	vstate int
-	vt     float64
+	ph        int
+	pt        float64
+	phStarted bool
+	darkWake  float64
 
 	branches [4]*Branch
-	eyes     [4]*Eye
 	amb      [2]*Branch
-	watcher  *Eye
+	eyes     [4]*Eye
 
-	cool, nextGlitch float64
-	next             int
-	wasBusy          bool
+	bcool, nextGlitch float64
+	nextBranch        int
+	fight, wasFight   bool
 
 	warnDim, warnHot, beamOut, beamCore, flashPix *ebiten.Image
 	black                                         [10]*ebiten.Image
@@ -105,7 +134,7 @@ type Boss struct {
 }
 
 func New(_, _, _ float64) *Boss {
-	b := &Boss{cool: 1.5, seed: 12345, nextGlitch: 4}
+	b := &Boss{seed: 12345, nextGlitch: 4, bcool: 3, inten: 0.3}
 	imgs := [4]*ebiten.Image{}
 	for j, p := range vine {
 		imgs[j] = load(p.name)
@@ -127,13 +156,10 @@ func New(_, _, _ float64) *Boss {
 	b.amb[0].rootX, b.amb[0].rootY, b.amb[0].angle = -30, 10, 0.62
 	b.amb[1].rootX, b.amb[1].rootY, b.amb[1].angle = arenaW+30, arenaH+10, math.Pi+0.5
 
-	e2, e3, e1, e4 := load("eye2"), load("eye3"), load("eye1"), load("eye4")
-	b.eyes = [4]*Eye{newEye(e2, 2.4), newEye(e3, 2.4), newEye(e1, 2.9), newEye(e4, 2.9)}
-	b.watcher = newEye(e3, 6.2)
-	b.watcher.live = true
-	b.watcher.homeX, b.watcher.homeY, b.watcher.outY = arenaW*0.3, -30, -1
-	b.watcher.ent.Set(1)
-	b.watcher.lag = 0.4
+	b.eyes[Executioner] = newEye(Executioner, load("eye2"), 3.6, 0, 120, 0.1)
+	b.eyes[Stalker] = newEye(Stalker, load("eye3"), 3.6, 1, 120, 0.04)
+	b.eyes[Divider] = newEye(Divider, load("eye1"), 5.0, 2, 280, 0.3)
+	b.eyes[Witness] = newEye(Witness, load("eye4"), 4.4, 3, 300, 0.55)
 
 	b.warnDim = pixel(color.RGBA{110, 18, 28, 110})
 	b.warnHot = pixel(color.RGBA{255, 70, 80, 255})
@@ -169,21 +195,52 @@ func (b *Boss) jit() (float64, float64) {
 		math.Cos(step*39.346+float64(b.n)*11.135) * 1.4
 }
 
-func (b *Boss) actorsBusy() bool {
+func (b *Boss) react() {
+	for _, e := range b.eyes {
+		e.pop.Go(0.09, 0.04, 0, 1)
+	}
+}
+
+func (b *Boss) stare() {
+	for _, e := range b.eyes {
+		x, y := e.center()
+		e.look = math.Atan2(b.py-y, b.px-x)
+		e.pop.Go(0.14, 0.05, 0, 1)
+		e.blink.Set(0)
+	}
+	b.tear, b.flash = 1, 0.08
+}
+
+func (b *Boss) branchesRunning() bool {
 	for _, br := range b.branches {
 		if br.running {
-			return true
-		}
-	}
-	for _, e := range b.eyes {
-		if e.running {
 			return true
 		}
 	}
 	return false
 }
 
-func (b *Boss) busy() bool { return b.actorsBusy() || b.vstate != 0 }
+func (b *Boss) startPhase(i int) {
+	p := script[i]
+	b.phStarted = true
+	b.pt = 0
+	b.darkWake = 0
+	for k, e := range b.eyes {
+		e.active = p.mask&(1<<k) != 0
+		e.cool = []float64{0.3, 0.9, 1.5, 0.6}[k]
+	}
+	if p.dark {
+		b.dark.Go(1, 0.4, 0, 1)
+		b.darkWake = 1.8
+		for _, e := range b.eyes {
+			e.cool += b.darkWake
+		}
+	}
+	if !p.rest {
+		b.stare()
+		b.bcool = p.branch * 0.6
+	}
+}
 
 func (b *Boss) Update(dt, px, py float64) {
 	b.dt, b.px, b.py = dt, px, py
@@ -195,18 +252,43 @@ func (b *Boss) Update(dt, px, py float64) {
 	b.flash = math.Max(0, b.flash-dt)
 	b.dark.Update(dt)
 
-	busy := b.busy()
-	if busy != b.wasBusy {
-		b.wasBusy = busy
-		if busy {
-			b.watcher.ent.Go(0.55, 0.8, 0.3, 1)
-		} else {
-			b.watcher.ent.Go(1, 1.4, 0.3, 1)
+	if !b.phStarted {
+		b.startPhase(b.ph)
+	}
+	p := script[b.ph]
+	b.pt += dt
+	if b.darkWake > 0 {
+		b.darkWake -= dt
+		if b.darkWake <= 0 {
+			b.dark.Go(0.62, 0.6, 0, 1)
 		}
 	}
-	b.watcher.think(b, dt, true)
+	if b.pt >= p.dur {
+		if p.dark {
+			b.dark.Go(0, 1.2, 0, 1)
+		}
+		if onlyPhase >= 0 {
+			b.startPhase(onlyPhase)
+			b.ph = onlyPhase
+		} else {
+			b.ph = (b.ph + 1) % len(script)
+			b.startPhase(b.ph)
+		}
+		p = script[b.ph]
+	}
+	want := 0.25
+	if !p.rest {
+		want = p.inten
+	}
+	b.inten += (want - b.inten) * (1 - math.Exp(-0.8*dt))
+	b.heart += dt * 2 * math.Pi * (0.8 + 1.2*b.inten)
+	b.fight = !p.rest
+	if b.fight != b.wasFight {
+		b.wasFight = b.fight
+	}
+
 	for _, br := range b.amb {
-		br.updateAmbient(b, dt, busy)
+		br.updateAmbient(b, dt, b.fight)
 	}
 	for _, br := range b.branches {
 		br.update(b, dt)
@@ -217,24 +299,18 @@ func (b *Boss) Update(dt, px, py float64) {
 
 	b.nextGlitch -= dt
 	if b.nextGlitch <= 0 {
-		b.tear = math.Max(b.tear, 0.35)
-		b.nextGlitch = b.rr(5, 10)
+		b.tear = math.Max(b.tear, 0.3+0.3*b.inten)
+		b.nextGlitch = b.rr(3, 8) / (0.5 + b.inten)
 	}
 
-	b.updateVacant(dt)
-
-	if busy {
-		b.cool = 1.4
-		return
-	}
-	b.cool -= dt
-	if b.cool <= 0 {
-		n := b.next
-		if only >= 0 {
-			n = only
+	if p.branch > 0 && b.darkWake <= 0 && !b.branchesRunning() {
+		b.bcool -= dt
+		if b.bcool <= 0 {
+			order := [4]int{0, 2, 3, 1}
+			b.launch(order[b.nextBranch%4])
+			b.nextBranch++
+			b.bcool = p.branch * b.rr(0.8, 1.2)
 		}
-		b.launch(n)
-		b.next = (b.next + 1) % numAttacks
 	}
 }
 
@@ -245,40 +321,14 @@ func (b *Boss) farSide() float64 {
 	return -1
 }
 
-func (b *Boss) lane() float64 {
-	if b.py < arenaH/2 {
-		return arenaH * 0.74
-	}
-	return arenaH * 0.26
-}
-
 func (b *Boss) launch(n int) {
 	side := b.farSide()
 	switch n {
 	case 0:
 		b.branches[0].strike(b, sideStrike(side, 3.4, int(b.rnd()*3), 0))
 	case 1:
-		edge := 1
-		if side < 0 {
-			edge = 0
-		}
-		b.eyes[0].fire(b, edge, b.lane(), eyeSpec{trackT: 1.3, lockT: 0.7, volleys: 2, beamW: 38})
-	case 2:
-		cy := clamp(b.py, 90, 150)
-		b.branches[0].strike(b, crossStrike(1, cy, 0, 0.7, 0))
-		b.branches[1].strike(b, crossStrike(-1, cy, 0.15, 1.0, 1))
-	case 3:
-		edge := 0
-		if side < 0 {
-			edge = 1
-		}
-		b.eyes[0].fire(b, edge, b.lane(), eyeSpec{trackT: 1.1, lockT: 0.7, volleys: 1, beamW: 38})
-		b.eyes[1].fire(b, 2, arenaW*b.rr(0.3, 0.7), eyeSpec{delay: 1.2, trackT: 0.8, lockT: 0.55, volleys: 1, beamW: 28})
-		b.branches[0].strike(b, sideStrike(side, 3.6, int(b.rnd()*3), 0.35))
-	case 4:
-		sp0 := sideStrike(1, 2.8, 0, 0)
-		sp0.rootX, sp0.angle = -20, 0
-		sp1 := sideStrike(-1, 2.8, 0, 0.25)
+		sp0 := sideStrike(-1, 2.8, 0, 0)
+		sp1 := sideStrike(1, 2.8, 0, 0.25)
 		sp1.yOff = clamp(arenaH/2-b.py, -1, 1) * 90
 		sp1.retractDur = 1.2
 		sp2 := sideStrike(1, 2.6, 0, 0.5)
@@ -288,41 +338,16 @@ func (b *Boss) launch(n int) {
 		b.branches[0].strike(b, sp0)
 		b.branches[1].strike(b, sp1)
 		b.branches[2].strike(b, sp2)
-		b.eyes[2].fire(b, 3, arenaW*0.5, eyeSpec{delay: 1.4, trackT: 0.6, lockT: 0.5, volleys: 1, beamW: 26})
-	case 5:
-		b.eyes[0].fire(b, 0, 60, eyeSpec{trackT: 1.0, lockT: 0.55, volleys: 1, beamW: 34})
-		b.eyes[1].fire(b, 1, 180, eyeSpec{delay: 0.5, trackT: 1.0, lockT: 0.55, volleys: 1, beamW: 34})
-		b.eyes[2].fire(b, 2, 200, eyeSpec{delay: 1.0, trackT: 0.9, lockT: 0.5, volleys: 1, beamW: 24})
-		b.eyes[3].fire(b, 3, 380, eyeSpec{delay: 1.5, trackT: 0.8, lockT: 0.5, volleys: 1, beamW: 24})
-		b.branches[0].strike(b, sideStrike(side, 3.2, 1, 1.9))
-	case 6:
-		b.vstate, b.vt = 1, 0
-		b.dark.Go(1, 0.4, 0, 1)
-	}
-}
-
-func (b *Boss) updateVacant(dt float64) {
-	switch b.vstate {
-	case 1:
-		b.vt += dt
-		if b.vt > 1.6 {
-			b.vstate = 2
-			edge := 1
-			if b.farSide() < 0 {
-				edge = 0
-			}
-			b.eyes[0].fire(b, edge, b.lane(), eyeSpec{trackT: 0.8, lockT: 0.8, volleys: 1, beamW: 40})
-			b.branches[0].strike(b, sideStrike(-b.farSide(), 3.4, 0, 1.6))
-		}
 	case 2:
-		if !b.actorsBusy() {
-			b.vstate = 3
-			b.dark.Go(0, 1.0, 0, 1)
-		}
+		cy := clamp(b.py, 90, 150)
+		b.branches[0].strike(b, crossStrike(1, cy, 0, 0.7, 0))
+		b.branches[1].strike(b, crossStrike(-1, cy, 0.15, 1.0, 1))
 	case 3:
-		if b.dark.Value < 0.02 {
-			b.vstate = 0
-		}
+		sp := sideStrike(1, 3.0, 3, 0)
+		sp.rootX, sp.rootY, sp.angle, sp.reach = clamp(arenaW-b.px, 120, arenaW-120), -20, math.Pi/2, arenaH*1.2
+		sp.track = false
+		sp.windup = 0.8
+		b.branches[0].strike(b, sp)
 	}
 }
 
@@ -345,7 +370,6 @@ func (b *Boss) Draw(dst *ebiten.Image) {
 	sx := math.Sin(b.time*97) * b.Shake
 	sy := math.Cos(b.time*83) * b.Shake
 
-	b.watcher.draw(dst, b, 0, 0)
 	for _, br := range b.amb {
 		br.draw(dst, b, 0, 0)
 	}
@@ -355,6 +379,9 @@ func (b *Boss) Draw(dst *ebiten.Image) {
 	b.drawDark(dst)
 	for _, br := range b.branches {
 		br.drawWarn(dst, b, sx, sy)
+	}
+	for _, e := range b.eyes {
+		e.drawMarks(dst, b)
 	}
 	for _, e := range b.eyes {
 		e.drawBeam(dst, b, sx, sy)
@@ -387,6 +414,13 @@ func (b *Boss) rect(dst, pix *ebiten.Image, x0, y0, x1, y1 float64) {
 	dst.DrawImage(pix, &ebiten.DrawImageOptions{GeoM: m})
 }
 
+func (b *Boss) frameRect(dst, pix *ebiten.Image, cx, cy, half, th float64) {
+	b.rect(dst, pix, cx-half, cy-half, cx+half, cy-half+th)
+	b.rect(dst, pix, cx-half, cy+half-th, cx+half, cy+half)
+	b.rect(dst, pix, cx-half, cy-half+th, cx-half+th, cy+half-th)
+	b.rect(dst, pix, cx+half-th, cy-half+th, cx+half, cy+half-th)
+}
+
 func (b *Boss) alpha(a float64) *ebiten.Image {
 	return b.black[int(clamp(a, 0, 1)*9+0.5)]
 }
@@ -400,14 +434,21 @@ func (b *Boss) outside(dst, pix *ebiten.Image, cx, cy, half float64) {
 	b.rect(dst, pix, x1, y0, arenaW, y1)
 }
 
+func (b *Boss) beat() float64 {
+	s := math.Max(0, math.Sin(b.heart))
+	return s * s * s
+}
+
 func (b *Boss) drawDark(dst *ebiten.Image) {
 	d := b.dark.Value
-	if d < 0.02 {
-		return
+	if d >= 0.02 {
+		b.rect(dst, b.alpha(0.3*d), 0, 0, arenaW, arenaH)
+		b.outside(dst, b.alpha(0.35*d), b.px, b.py, 140)
+		b.outside(dst, b.alpha(0.4*d), b.px, b.py, 80)
 	}
-	b.rect(dst, b.alpha(0.3*d), 0, 0, arenaW, arenaH)
-	b.outside(dst, b.alpha(0.35*d), b.px, b.py, 140)
-	b.outside(dst, b.alpha(0.4*d), b.px, b.py, 80)
+	if b.fight {
+		b.outside(dst, b.alpha(0.16*b.beat()*b.inten), arenaW/2, arenaH/2, 205)
+	}
 }
 
 func (b *Boss) drawTear(dst *ebiten.Image) {
@@ -423,7 +464,7 @@ func (b *Boss) drawTear(dst *ebiten.Image) {
 	step := 8
 	tick := math.Floor(b.time * 20)
 	for y := 0; y < h; y += step {
-		r := math.Abs(math.Sin(float64(y)*12.9898+tick*78.233))
+		r := math.Abs(math.Sin(float64(y)*12.9898 + tick*78.233))
 		if r > 0.35 {
 			continue
 		}
@@ -440,13 +481,13 @@ func (b *Boss) drawTear(dst *ebiten.Image) {
 }
 
 type Branch struct {
-	img                                    [4]*ebiten.Image
-	running, live, danger, warn, ambient   bool
-	rootX, rootY, angle, scale, reach      float64
-	ext, tilt                              Eased
-	kick                                   Spring
-	tl                                     Timeline
-	delay, t, seed                         float64
+	img                                  [4]*ebiten.Image
+	running, live, danger, warn, ambient bool
+	rootX, rootY, angle, scale, reach    float64
+	ext, tilt                            Eased
+	kick                                 Spring
+	tl                                   Timeline
+	delay, t, seed                       float64
 }
 
 type strikeSpec struct {
@@ -502,6 +543,7 @@ func (br *Branch) strike(b *Boss, s strikeSpec) {
 		b.Shake = power
 		b.tear = 1
 		br.kick.Vel += 8
+		b.react()
 	}
 
 	steps := []Step{
@@ -606,11 +648,11 @@ func (br *Branch) update(b *Boss, dt float64) {
 	}
 }
 
-func (br *Branch) updateAmbient(b *Boss, dt float64, busy bool) {
+func (br *Branch) updateAmbient(b *Boss, dt float64, fight bool) {
 	br.t += dt
 	br.kick.Update(dt)
 	want := 0.2 + 0.04*math.Sin(br.t*0.8+br.seed)
-	if busy {
+	if fight {
 		want = 0.02
 	}
 	br.ext.Value += (want - br.ext.Value) * (1 - math.Exp(-2*dt))
@@ -644,10 +686,8 @@ func (br *Branch) drawWarn(dst *ebiten.Image, b *Boss, sx, sy float64) {
 	if !br.live || !br.warn {
 		return
 	}
-	tx, ty, dx, dy, a, _ := br.geometry()
+	tx, ty, _, _, a, _ := br.geometry()
 	b.line(dst, b.warnDim, tx+sx, ty+sy, a, 700, 6)
-	_ = dx
-	_ = dy
 }
 
 func (br *Branch) draw(dst *ebiten.Image, b *Boss, sx, sy float64) {
@@ -675,54 +715,114 @@ func (br *Branch) draw(dst *ebiten.Image, b *Boss, sx, sy float64) {
 	}
 }
 
-type Eye struct {
-	img                   *ebiten.Image
-	scale                 float64
-	running, live, danger bool
+const (
+	mIdle = iota
+	mTrack
+	mLock
+	mFire
+	mSettle
+	mCharge
+	mWedge
+	mAway
+)
 
-	homeX, homeY, outX, outY float64
-	ent, gOff, blink, pop    Eased
-	aim, look                float64
-	mode                     int
-	width, pulse, t          float64
-	lag, beamW               float64
-	nextBlink, nextGlance    float64
-	glanceHold               float64
-	closing                  bool
-	tl                       Timeline
-	delay                    float64
+type mark struct {
+	x, y, t float64
+	on      bool
 }
 
-func newEye(img *ebiten.Image, scale float64) *Eye {
-	return &Eye{img: img, scale: scale, lag: 0.2, nextBlink: 2, nextGlance: 1}
+type Eye struct {
+	kind  int
+	edge  int
+	img   *ebiten.Image
+	scale float64
+
+	active, running, danger bool
+
+	along, ent, gOff, blink, pop, sweep Eased
+	aim, look                           float64
+	mode                                int
+	width, pulse, t                     float64
+	lag, beamW                          float64
+	nextBlink, nextGlance, glanceHold   float64
+	nextDrift, cool                     float64
+	closing                             bool
+	a0, a1                              float64
+	tl                                  Timeline
+	marks                               [3]mark
+}
+
+func newEye(kind int, img *ebiten.Image, scale float64, edge int, along, lag float64) *Eye {
+	e := &Eye{kind: kind, edge: edge, img: img, scale: scale, lag: lag,
+		nextBlink: 1.5 + float64(kind), nextGlance: 1 + 0.7*float64(kind), nextDrift: 3 + float64(kind)}
+	e.along.Set(along)
+	e.ent.Set(0.8)
+	return e
 }
 
 func (e *Eye) size() float64 { return float64(e.img.Bounds().Dx()) / pxPerMM * e.scale }
 
+func (e *Eye) home() (float64, float64) {
+	switch e.edge {
+	case 0:
+		return 12, e.along.Value
+	case 1:
+		return arenaW - 12, e.along.Value
+	case 2:
+		return e.along.Value, 12
+	}
+	return e.along.Value, arenaH - 12
+}
+
+func (e *Eye) out() (float64, float64) {
+	switch e.edge {
+	case 0:
+		return -1, 0
+	case 1:
+		return 1, 0
+	case 2:
+		return 0, -1
+	}
+	return 0, 1
+}
+
 func (e *Eye) center() (float64, float64) {
+	hx, hy := e.home()
+	ox, oy := e.out()
 	d := (1 - e.ent.Value) * (e.size() + 60)
-	return e.homeX + e.outX*d, e.homeY + e.outY*d
+	return hx + ox*d, hy + oy*d
 }
 
-type eyeSpec struct {
-	delay, trackT, lockT float64
-	volleys              int
-	beamW                float64
+func (e *Eye) ang(b *Boss) float64 {
+	x, y := e.center()
+	return math.Atan2(b.py-y, b.px-x)
 }
 
-func (e *Eye) think(b *Boss, dt float64, watching bool) {
+func (e *Eye) alongRange() (float64, float64) {
+	if e.edge < 2 {
+		return 50, 190
+	}
+	return 90, 470
+}
+
+func (e *Eye) think(b *Boss, dt float64) {
 	e.t += dt
 	e.ent.Update(dt)
+	e.along.Update(dt)
 	e.gOff.Update(dt)
 	e.blink.Update(dt)
 	e.pop.Update(dt)
+	e.sweep.Update(dt)
+	if e.pop.t >= 1 && e.pop.Value > 0.001 {
+		e.pop.Go(0, 0.25, 0, 1)
+	}
 
-	calm := watching || e.mode == 1
+	calm := e.mode == mIdle || e.mode == mTrack || e.mode == mSettle
 	e.nextBlink -= dt
-	if calm && e.nextBlink <= 0 && !e.closing {
+	if (calm || e.mode == mAway) && e.nextBlink <= 0 && !e.closing {
 		e.blink.Go(1, 0.06, 0, 1)
 		e.closing = true
-		e.nextBlink = b.rr(2.2, 5)
+		e.nextBlink = b.rr(1.6, 4.5)
 	}
 	if e.closing && e.blink.Value >= 0.99 {
 		e.blink.Go(0, 0.14, 0, 1)
@@ -736,119 +836,264 @@ func (e *Eye) think(b *Boss, dt float64, watching bool) {
 			e.gOff.Go(0, 0.09, 0, 1)
 		}
 	}
-	if calm && e.nextGlance <= 0 && e.glanceHold <= 0 {
-		e.gOff.Go(b.rr(0.7, 1.4)*math.Copysign(1, b.rnd()-0.5), 0.07, 0, 1)
-		e.glanceHold = b.rr(0.2, 0.4)
-		e.nextGlance = b.rr(0.8, 2.2)
+	if (e.mode == mIdle || e.mode == mTrack) && e.nextGlance <= 0 && e.glanceHold <= 0 {
+		e.gOff.Go(b.rr(0.7, 1.5)*math.Copysign(1, b.rnd()-0.5), 0.07, 0, 1)
+		e.glanceHold = b.rr(0.2, 0.45)
+		e.nextGlance = b.rr(0.8, 2.4)
 	}
-	if !calm {
+	if !(e.mode == mIdle || e.mode == mTrack) && e.glanceHold <= 0 && e.gOff.Value != 0 {
 		e.gOff.Go(0, 0.1, 0, 1)
 	}
 
-	if calm {
+	switch e.mode {
+	case mIdle, mTrack, mSettle:
 		x, y := e.center()
 		px, py := b.past(e.lag)
 		want := math.Atan2(py-y, px-x) + e.gOff.Value
 		e.look += wrap(want-e.look) * (1 - math.Exp(-9*dt))
+	case mAway:
+		want := e.ang(b) + math.Pi*0.85
+		e.look += wrap(want-e.look) * (1 - math.Exp(-5*dt))
+	default:
+		e.look = e.aim
 	}
 }
 
-func (e *Eye) fire(b *Boss, edge int, along float64, s eyeSpec) {
-	switch edge {
-	case 0:
-		e.homeX, e.homeY, e.outX, e.outY = 12, along, -1, 0
-	case 1:
-		e.homeX, e.homeY, e.outX, e.outY = arenaW-12, along, 1, 0
-	case 2:
-		e.homeX, e.homeY, e.outX, e.outY = along, 12, 0, -1
-	default:
-		e.homeX, e.homeY, e.outX, e.outY = along, arenaH-12, 0, 1
+func (e *Eye) idleMotion(b *Boss, dt float64) {
+	if e.ent.t >= 1 {
+		want := 0.8 + 0.03*math.Sin(e.t*0.9+float64(e.kind))
+		e.ent.Value += (want - e.ent.Value) * (1 - math.Exp(-3*dt))
 	}
-	e.beamW = s.beamW
-	e.ent.Set(0)
-	e.mode, e.width, e.pulse = 0, 0, 0
-	e.delay, e.running, e.live, e.danger = s.delay, true, false, false
-
-	ang := func() float64 {
-		x, y := e.center()
-		return math.Atan2(b.py-y, b.px-x)
+	e.nextDrift -= dt
+	if e.nextDrift <= 0 {
+		lo, hi := e.alongRange()
+		e.along.Go(b.rr(lo, hi), 1.4, 0.3, 1)
+		e.nextDrift = b.rr(4, 8)
 	}
-	steps := []Step{
-		{Dur: 0.7, Enter: func() {
-			e.live = true
-			e.aim = ang()
-			e.look = e.aim
-			e.ent.Go(1, 0.7, 0.1, 1)
-		}},
-		{Dur: s.trackT, Enter: func() { e.mode = 1 }},
-	}
-	volley := func(lockT float64) {
-		steps = append(steps,
-			Step{Dur: 0.2, Enter: func() {
-				e.mode = 4
-				e.look = ang()
-				e.pop.Go(0.14, 0.05, 0, 1)
-			}, Tick: func(p float64) {
-				if p > 0.5 {
-					e.pop.Go(0, 0.12, 0, 1)
-				}
-			}},
-			Step{Dur: lockT, Enter: func() {
-				e.mode = 2
-				e.aim = ang()
-				e.look = e.aim
-				e.ent.Go(0.9, lockT, 0.3, 1)
-			}, Tick: func(p float64) {
-				e.pulse = math.Sin(e.t*45) * 0.03 * p
-			}},
-			Step{Dur: 0.55, Enter: func() {
-				e.mode, e.pulse = 3, 0
-				e.ent.Go(1, 0.1, 0, 1)
-				b.Shake = 8
-				b.tear = 1
-				b.flash = 0.06
-			}, Tick: func(p float64) {
-				env := math.Min(p/0.12, 1)
-				if p > 0.7 {
-					env *= (1 - p) / 0.3
-				}
-				e.width = e.beamW * env
-				e.danger = env > 0.4
-			}},
-			Step{Dur: 0.12, Enter: func() { e.mode, e.danger, e.width = 4, false, 0 }},
-		)
-	}
-	volley(s.lockT)
-	for i := 1; i < s.volleys; i++ {
-		volley(s.lockT * 0.65)
-	}
-	steps = append(steps,
-		Step{Dur: 0.3, Enter: func() { e.mode = 0 }},
-		Step{Dur: 0.5, Enter: func() { e.ent.Go(0, 0.5, 0.4, 1) }},
-		Step{Dur: 0.02, Enter: func() { e.live = false }},
-	)
-	e.tl.Start(steps...)
 }
 
 func (e *Eye) update(b *Boss, dt float64) {
-	if !e.live && !e.running {
+	e.think(b, dt)
+	e.updateMarks(b, dt)
+	if e.running {
+		if !e.tl.Update(dt) {
+			e.running, e.danger, e.width = false, false, 0
+			e.mode = mIdle
+			e.cool = b.rr(1.2, 2.6) / (0.7 + 0.5*b.inten)
+		}
 		return
 	}
-	e.think(b, dt, false)
-	if !e.running {
-		return
-	}
-	if e.delay > 0 {
-		e.delay -= dt
-		return
-	}
-	if !e.tl.Update(dt) {
-		e.running, e.live, e.danger = false, false, false
+	e.idleMotion(b, dt)
+	if e.active {
+		e.cool -= dt
+		if e.cool <= 0 {
+			e.start(b)
+		}
 	}
 }
 
+func (e *Eye) updateMarks(b *Boss, dt float64) {
+	for i := range e.marks {
+		m := &e.marks[i]
+		if !m.on {
+			continue
+		}
+		m.t += dt
+		if m.t > 1.65 {
+			m.on = false
+		}
+	}
+}
+
+func (e *Eye) start(b *Boss) {
+	e.running = true
+	var steps []Step
+	switch e.kind {
+	case Executioner:
+		steps = e.scriptExecutioner(b)
+	case Stalker:
+		steps = e.scriptStalker(b)
+	case Divider:
+		steps = e.scriptDivider(b)
+	default:
+		steps = e.scriptWitness(b)
+	}
+	e.tl.Start(steps...)
+}
+
+func (e *Eye) emerge(b *Boss, dur, along float64) Step {
+	return Step{Dur: dur, Enter: func() {
+		e.mode = mTrack
+		e.ent.Go(1, dur, 0.1, 1)
+		e.along.Go(along, dur, 0.2, 1)
+	}}
+}
+
+func (e *Eye) retreat() Step {
+	return Step{Dur: 0.7, Enter: func() {
+		e.mode, e.danger, e.width = mSettle, false, 0
+		e.ent.Go(0.8, 0.7, 0.4, 1)
+	}}
+}
+
+func (e *Eye) notice(b *Boss) Step {
+	return Step{Dur: 0.2, Enter: func() {
+		e.mode = mTrack
+		e.look = e.ang(b)
+		e.pop.Go(0.14, 0.05, 0, 1)
+	}}
+}
+
+func (e *Eye) scriptExecutioner(b *Boss) []Step {
+	lockT := 0.85 - 0.2*b.inten
+	lock := func(t float64) Step {
+		return Step{Dur: t, Enter: func() {
+			e.mode = mLock
+			e.aim = e.ang(b)
+			e.look = e.aim
+			e.ent.Go(0.92, t, 0.3, 1)
+		}, Tick: func(p float64) { e.pulse = math.Sin(e.t*45) * 0.03 * p }}
+	}
+	fire := Step{Dur: 0.55, Enter: func() {
+		e.mode, e.pulse = mFire, 0
+		e.ent.Go(1, 0.1, 0, 1)
+		b.Shake, b.tear, b.flash = 8, 1, 0.06
+		b.react()
+	}, Tick: func(p float64) {
+		env := math.Min(p/0.12, 1)
+		if p > 0.7 {
+			env *= (1 - p) / 0.3
+		}
+		e.width = 40 * env
+		e.danger = env > 0.4
+	}}
+	_, py := e.center()
+	_ = py
+	steps := []Step{
+		e.emerge(b, 0.5, b.rr(60, 180)),
+		{Dur: b.rr(0.8, 1.3), Enter: func() { e.mode = mTrack }},
+		e.notice(b),
+		lock(lockT),
+	}
+	if b.rnd() < 0.3+0.2*b.inten {
+		steps = append(steps,
+			Step{Dur: 0.35, Enter: func() {
+				e.mode, e.pulse = mAway, 0
+				e.ent.Go(0.85, 0.35, 0.2, 1)
+			}},
+			e.notice(b),
+			lock(0.5))
+	} else {
+		steps = append(steps, Step{Dur: b.rr(0, 0.45) * b.inten})
+	}
+	return append(steps, fire, Step{Dur: 0.15, Enter: func() { e.mode, e.danger, e.width = mSettle, false, 0 }}, e.retreat())
+}
+
+func (e *Eye) scriptStalker(b *Boss) []Step {
+	steps := []Step{
+		e.emerge(b, 0.5, 0),
+		{Dur: 0.7, Enter: func() {
+			e.mode = mTrack
+			e.along.Go(clamp(b.py, 50, 190), 0.7, 0.2, 1)
+		}},
+		{Dur: 0.45, Enter: func() { e.mode, e.aim = mCharge, e.ang(b) }, Tick: func(p float64) {
+			e.aim += wrap(e.ang(b)-e.aim) * (1 - math.Exp(-6*b.dt))
+		}},
+	}
+	for i := 0; i < 3; i++ {
+		steps = append(steps,
+			Step{Dur: 0.22, Enter: func() {
+				e.mode = mFire
+				b.Shake, b.flash = 3, 0.03
+			}, Tick: func(p float64) {
+				e.aim += wrap(e.ang(b)-e.aim) * (1 - math.Exp(-3.4*b.dt))
+				env := math.Min(p/0.15, 1) * math.Min((1-p)/0.25, 1)
+				e.width = 16 * env
+				e.danger = env > 0.4
+			}},
+			Step{Dur: 0.15, Enter: func() { e.mode, e.danger, e.width = mCharge, false, 0 }, Tick: func(p float64) {
+				e.aim += wrap(e.ang(b)-e.aim) * (1 - math.Exp(-6*b.dt))
+			}})
+	}
+	return append(steps, e.retreat())
+}
+
+func (e *Eye) scriptDivider(b *Boss) []Step {
+	along := b.rr(300, 430)
+	if b.px > arenaW/2 {
+		along = b.rr(130, 260)
+	}
+	return []Step{
+		e.emerge(b, 0.6, along),
+		{Dur: 0.4, Enter: func() { e.mode = mTrack }},
+		{Dur: 0.95, Enter: func() {
+			e.mode = mWedge
+			half := 0.62
+			base := clamp(e.ang(b), 0.2+half, math.Pi-0.2-half)
+			s := math.Copysign(1, b.rnd()-0.5)
+			e.a0, e.a1 = base-s*half, base+s*half
+			e.aim = e.a0
+			e.ent.Go(0.95, 0.95, 0.3, 1)
+		}, Tick: func(p float64) { e.pulse = math.Sin(e.t*30) * 0.02 * p }},
+		{Dur: 1.9, Enter: func() {
+			e.mode, e.pulse = mFire, 0
+			e.ent.Go(1, 0.1, 0, 1)
+			e.sweep.Set(e.a0)
+			e.sweep.Go(e.a1, 1.9, 0.25, 0.75)
+			b.Shake, b.tear, b.flash = 6, 1, 0.06
+			b.react()
+		}, Tick: func(p float64) {
+			e.aim = e.sweep.Value
+			env := math.Min(p/0.06, 1) * math.Min((1-p)/0.06, 1)
+			e.width = 54 * env
+			e.danger = env > 0.4
+		}},
+		{Dur: 0.15, Enter: func() { e.mode, e.danger, e.width = mSettle, false, 0 }},
+		e.retreat(),
+	}
+}
+
+func (e *Eye) scriptWitness(b *Boss) []Step {
+	steps := []Step{
+		e.emerge(b, 0.5, b.rr(120, 440)),
+		{Dur: 0.5, Enter: func() { e.mode = mTrack }},
+	}
+	for i := 0; i < 3; i++ {
+		i := i
+		steps = append(steps, Step{Dur: 0.28, Enter: func() {
+			e.mode = mTrack
+			x, y := b.px, b.py
+			switch i {
+			case 1:
+				ox, oy := b.past(0.3)
+				x, y = b.px+(b.px-ox)*3.3, b.py+(b.py-oy)*3.3
+			case 2:
+				a := b.rnd() * 2 * math.Pi
+				d := b.rr(70, 120)
+				x, y = b.px+math.Cos(a)*d, b.py+math.Sin(a)*d
+			}
+			e.marks[i] = mark{x: clamp(x, 40, arenaW-40), y: clamp(y, 40, arenaH-40), on: true}
+			e.pop.Go(0.1, 0.04, 0, 1)
+		}})
+	}
+	return append(steps,
+		Step{Dur: 1.0, Enter: func() { e.mode = mAway; e.ent.Go(0.7, 0.4, 0.3, 1) }},
+		Step{Dur: 0.4, Enter: func() {
+			e.mode = mTrack
+			e.look = e.ang(b)
+			e.pop.Go(0.18, 0.05, 0, 1)
+			e.ent.Go(1, 0.3, 0.2, 1)
+		}},
+		e.retreat())
+}
+
 func (e *Eye) hit(px, py, pr float64) bool {
-	if !e.live || !e.danger {
+	for _, m := range e.marks {
+		if m.on && m.t >= 1.3 && math.Max(math.Abs(px-m.x), math.Abs(py-m.y)) < 38+pr*0.5 {
+			return true
+		}
+	}
+	if !e.danger {
 		return false
 	}
 	x, y := e.center()
@@ -856,20 +1101,46 @@ func (e *Eye) hit(px, py, pr float64) bool {
 	return segDist(px, py, x, y, ex, ey) < e.width*0.42+pr
 }
 
-func (e *Eye) drawBeam(dst *ebiten.Image, b *Boss, sx, sy float64) {
-	if !e.live || e.delay > 0 {
-		return
+func (e *Eye) drawMarks(dst *ebiten.Image, b *Boss) {
+	for _, m := range e.marks {
+		if !m.on {
+			continue
+		}
+		if m.t < 1.3 {
+			rate := 6 + 20*m.t
+			pix := b.warnDim
+			if int(m.t*rate)%2 == 0 {
+				pix = b.warnHot
+			}
+			b.frameRect(dst, pix, m.x, m.y, 38, 2)
+			b.frameRect(dst, pix, m.x, m.y, 38*(1-m.t/1.3)+2, 2)
+		} else {
+			f := 1 - (m.t-1.3)/0.35
+			b.rect(dst, b.beamOut, m.x-38, m.y-38, m.x+38, m.y+38)
+			b.rect(dst, b.beamCore, m.x-38*f*0.6, m.y-38*f*0.6, m.x+38*f*0.6, m.y+38*f*0.6)
+		}
 	}
+}
+
+func (e *Eye) drawBeam(dst *ebiten.Image, b *Boss, sx, sy float64) {
 	x, y := e.center()
 	x, y = x+sx, y+sy
 	switch e.mode {
-	case 2:
+	case mLock:
 		pix := b.warnDim
 		if int(e.t*14)%2 == 0 {
 			pix = b.warnHot
 		}
 		b.line(dst, pix, x, y, e.aim, 1400, 3)
-	case 3:
+	case mCharge:
+		b.line(dst, b.warnDim, x, y, e.aim, 1400, 2)
+	case mWedge:
+		b.line(dst, b.warnDim, x, y, e.a0, 1400, 2)
+		b.line(dst, b.warnDim, x, y, e.a1, 1400, 2)
+		if int(e.t*12)%2 == 0 {
+			b.line(dst, b.warnHot, x, y, e.a0, 1400, 3)
+		}
+	case mFire:
 		_, jy := b.jit()
 		w := e.width + jy
 		b.line(dst, b.beamOut, x, y, e.aim, 1400, w)
@@ -878,14 +1149,14 @@ func (e *Eye) drawBeam(dst *ebiten.Image, b *Boss, sx, sy float64) {
 }
 
 func (e *Eye) draw(dst *ebiten.Image, b *Boss, sx, sy float64) {
-	if !e.live || e.delay > 0 {
-		return
-	}
 	x, y := e.center()
-	y += 3 * math.Sin(e.t*1.7)
+	ox, oy := e.out()
+	bob := 3 * math.Sin(e.t*1.7+float64(e.kind))
+	x, y = x+oy*bob, y+ox*bob
 	jx, jy := b.jit()
 	w, h := float64(e.img.Bounds().Dx()), float64(e.img.Bounds().Dy())
-	s := e.scale / pxPerMM * (1 + e.pulse + e.pop.Value)
+	heart := 0.035 * b.beat() * (0.4 + b.inten)
+	s := e.scale / pxPerMM * (1 + e.pulse + e.pop.Value + heart)
 	var m ebiten.GeoM
 	m.Translate(-w/2, -h/2)
 	m.Rotate(e.look - irisAngle)
@@ -894,4 +1165,3 @@ func (e *Eye) draw(dst *ebiten.Image, b *Boss, sx, sy float64) {
 	m.Translate(x+jx+sx, y+jy+sy)
 	dst.DrawImage(e.img, &ebiten.DrawImageOptions{GeoM: m, Filter: ebiten.FilterLinear})
 }
-//
